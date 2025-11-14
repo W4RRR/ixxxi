@@ -57,8 +57,9 @@ EOF
 
 # ---------- Global variables ----------
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HADIXXITY_SCRIPT="${HADIXXITY_SCRIPT:-${SCRIPT_DIR}/../hadixxity.sh}"
-SUPERECON_SCRIPT="${SUPERECON_SCRIPT:-${SCRIPT_DIR}/../superecon.sh}"
+# First try to find scripts in the same directory (integrated app), then fallback to parent directory
+HADIXXITY_SCRIPT="${HADIXXITY_SCRIPT:-${SCRIPT_DIR}/hadixxity.sh}"
+SUPERECON_SCRIPT="${SUPERECON_SCRIPT:-${SCRIPT_DIR}/superecon.sh}"
 
 TARGET_DOMAIN=""
 COMPANY_NAME=""
@@ -110,6 +111,7 @@ DO_BBOT_WEB_BASIC=0
 DO_BBOT_WEB_THOROUGH=0
 DO_WMAP=0
 DO_API=0
+DO_CSP_RESEARCH=0
 VERBOSE=0
 GLOBAL_UA=""
 RND_MIN=""
@@ -171,6 +173,7 @@ SUPERECON options (active reconnaissance):
   --bbot-spider      bbot with spider + email-enum presets
   --bbot-web-basic   bbot with web-basic presets
   --bbot-web-thorough bbot with web-thorough presets
+  --csp-research     CSP/DOM-XSS research notes
   --wmap             Metasploit wmap integration (stub)
   --api              Create/load API keys file
 
@@ -202,17 +205,94 @@ ensure_file() {
 
 # ---------- Check scripts ----------
 check_scripts() {
+  local found_hadixxity=0
+  local found_superecon=0
+  
+  # Try to find hadixxity.sh in multiple locations
   if [[ ! -f "${HADIXXITY_SCRIPT}" ]]; then
-    die "hadixxity.sh script not found at: ${HADIXXITY_SCRIPT}"
+    info "Searching for hadixxity.sh in common locations..."
+    local search_paths=(
+      "${SCRIPT_DIR}/hadixxity.sh"
+      "${SCRIPT_DIR}/../hadixxity.sh"
+      "${SCRIPT_DIR}/../../hadixxity.sh"
+      "${HOME}/hadixxity/hadixxity.sh"
+      "${HOME}/software/pentest/hadixxity/hadixxity.sh"
+      "/opt/hadixxity/hadixxity.sh"
+      "$(command -v hadixxity.sh 2>/dev/null || true)"
+    )
+    
+    for path in "${search_paths[@]}"; do
+      if [[ -n "${path}" && -f "${path}" ]]; then
+        HADIXXITY_SCRIPT="${path}"
+        found_hadixxity=1
+        ok "Found hadixxity.sh at: ${HADIXXITY_SCRIPT}"
+        break
+      fi
+    done
+    
+    if [[ "${found_hadixxity}" -eq 0 ]]; then
+      err "hadixxity.sh script not found!"
+      err "Searched in:"
+      for path in "${search_paths[@]}"; do
+        [[ -n "${path}" ]] && err "  - ${path}"
+      done
+      err ""
+      err "Please either:"
+      err "  1. Place hadixxity.sh in the parent directory of ixxxi/"
+      err "  2. Set HADIXXITY_SCRIPT environment variable:"
+      err "     export HADIXXITY_SCRIPT=\"/path/to/hadixxity.sh\""
+      die "hadixxity.sh not found"
+    fi
+  else
+    found_hadixxity=1
   fi
+  
+  # Check if hadixxity.sh is executable
   if [[ ! -x "${HADIXXITY_SCRIPT}" ]]; then
     warn "hadixxity.sh is not executable, attempting chmod +x..."
     chmod +x "${HADIXXITY_SCRIPT}" || die "Could not make hadixxity.sh executable"
   fi
 
+  # Try to find superecon.sh in multiple locations
   if [[ ! -f "${SUPERECON_SCRIPT}" ]]; then
-    die "superecon.sh script not found at: ${SUPERECON_SCRIPT}"
+    info "Searching for superecon.sh in common locations..."
+    local search_paths=(
+      "${SCRIPT_DIR}/superecon.sh"
+      "${SCRIPT_DIR}/../superecon.sh"
+      "${SCRIPT_DIR}/../../superecon.sh"
+      "${HOME}/SUPERECON/superecon.sh"
+      "${HOME}/software/pentest/SUPERECON/superecon.sh"
+      "/opt/SUPERECON/superecon.sh"
+      "$(command -v superecon.sh 2>/dev/null || true)"
+    )
+    
+    for path in "${search_paths[@]}"; do
+      if [[ -n "${path}" && -f "${path}" ]]; then
+        SUPERECON_SCRIPT="${path}"
+        found_superecon=1
+        ok "Found superecon.sh at: ${SUPERECON_SCRIPT}"
+        break
+      fi
+    done
+    
+    if [[ "${found_superecon}" -eq 0 ]]; then
+      err "superecon.sh script not found!"
+      err "Searched in:"
+      for path in "${search_paths[@]}"; do
+        [[ -n "${path}" ]] && err "  - ${path}"
+      done
+      err ""
+      err "Please either:"
+      err "  1. Place superecon.sh in the parent directory of ixxxi/"
+      err "  2. Set SUPERECON_SCRIPT environment variable:"
+      err "     export SUPERECON_SCRIPT=\"/path/to/superecon.sh\""
+      die "superecon.sh not found"
+    fi
+  else
+    found_superecon=1
   fi
+  
+  # Check if superecon.sh is executable
   if [[ ! -x "${SUPERECON_SCRIPT}" ]]; then
     warn "superecon.sh is not executable, attempting chmod +x..."
     chmod +x "${SUPERECON_SCRIPT}" || die "Could not make superecon.sh executable"
@@ -395,6 +475,7 @@ run_superecon() {
   [[ "${DO_BBOT_SPIDER}" -eq 1 ]] && superecon_args+=(--bbot-spider)
   [[ "${DO_BBOT_WEB_BASIC}" -eq 1 ]] && superecon_args+=(--bbot-web-basic)
   [[ "${DO_BBOT_WEB_THOROUGH}" -eq 1 ]] && superecon_args+=(--bbot-web-thorough)
+  [[ "${DO_CSP_RESEARCH}" -eq 1 ]] && superecon_args+=(--csp-research)
   [[ "${DO_WMAP}" -eq 1 ]] && superecon_args+=(--wmap)
   [[ "${DO_API}" -eq 1 ]] && superecon_args+=(--api)
 
@@ -622,6 +703,8 @@ while [[ $# -gt 0 ]]; do
       DO_BBOT_WEB_BASIC=1; shift 1;;
     --bbot-web-thorough)
       DO_BBOT_WEB_THOROUGH=1; shift 1;;
+    --csp-research)
+      DO_CSP_RESEARCH=1; shift 1;;
     --wmap)
       DO_WMAP=1; shift 1;;
     --api)

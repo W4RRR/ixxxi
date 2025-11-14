@@ -53,26 +53,77 @@ IXXXI executes a 4-phase workflow:
 
 ## 📋 Requirements
 
-- Bash 5+
-- Scripts `hadixxity.sh` and `superecon.sh` in the parent directory or specified via environment variables
-- Tools required by hadixxity and SUPERECON (see their respective READMEs)
+- **Bash 5+**
+- **All scripts included**: `ixxxi.sh`, `hadixxity.sh`, and `superecon.sh` are included in the same directory
+- **Basic tools**: `curl`, `git`, `dig`, `whois` (usually pre-installed on Kali Linux)
+- **Optional tools**: Various reconnaissance tools (subfinder, httpx, dnsx, etc.) - see tool-specific documentation
+- **API keys** (optional but recommended): Shodan, ProjectDiscovery, VirusTotal, etc. (see `config.env.example`)
 
 ## 🚀 Installation
 
-1. Ensure you have `hadixxity.sh` and `superecon.sh` available:
+IXXXI is now a **fully integrated application** with all components included in a single directory.
+
+### Quick Start
+
+1. **Run the unified installation script:**
    ```bash
-   # If they're in the parent directory
-   ls ../hadixxity.sh ../superecon.sh
-   
-   # Or specify custom paths
-   export HADIXXITY_SCRIPT="/path/to/hadixxity.sh"
-   export SUPERECON_SCRIPT="/path/to/superecon.sh"
+   cd ixxxi
+   chmod +x install.sh
+   ./install.sh
    ```
 
-2. Make the script executable:
+2. **Configure API keys:**
    ```bash
-   chmod +x ixxxi.sh
+   # Edit the configuration file
+   nano .ixxxi.env
+   # or
+   vim .ixxxi.env
    ```
+   
+   Add your API keys (see `config.env.example` for all available options):
+   - **Shodan**: https://account.shodan.io/
+   - **ProjectDiscovery**: https://cloud.projectdiscovery.io/
+   - **VirusTotal**: https://www.virustotal.com/gui/join-us
+   - **URLScan.io**: https://urlscan.io/user/signup
+   - And more (see config file)
+
+3. **Start using IXXXI:**
+   ```bash
+   ./ixxxi.sh -d target.com
+   ```
+
+### Manual Installation (if needed)
+
+If you prefer to install components separately:
+
+1. **Ensure all scripts are in the same directory:**
+   ```bash
+   ls ixxxi/
+   # Should show: ixxxi.sh, hadixxity.sh, superecon.sh, install.sh
+   ```
+
+2. **Make scripts executable:**
+   ```bash
+   chmod +x ixxxi.sh hadixxity.sh superecon.sh install.sh
+   ```
+
+3. **Create configuration file:**
+   ```bash
+   cp config.env.example .ixxxi.env
+   # Edit .ixxxi.env with your API keys
+   ```
+
+### Custom Script Locations
+
+If `hadixxity.sh` or `superecon.sh` are in different locations, you can specify them:
+
+```bash
+export HADIXXITY_SCRIPT="/path/to/hadixxity.sh"
+export SUPERECON_SCRIPT="/path/to/superecon.sh"
+./ixxxi.sh -d target.com
+```
+
+The script will automatically search in common locations if not found in the same directory.
 
 ## 💻 Basic Usage
 
@@ -254,7 +305,7 @@ Consolidation (PHASE 4)
 
 1. **Authorization**: Run this script only against targets where you have explicit authorization.
 
-2. **Script Paths**: By default, IXXXI looks for `hadixxity.sh` and `superecon.sh` in the parent directory. You can specify custom paths:
+2. **Script Paths**: By default, IXXXI looks for `hadixxity.sh` and `superecon.sh` in the same directory (integrated app). If not found, it searches in common locations. You can specify custom paths:
    ```bash
    export HADIXXITY_SCRIPT="/path/to/hadixxity.sh"
    export SUPERECON_SCRIPT="/path/to/superecon.sh"
