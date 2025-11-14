@@ -17,7 +17,6 @@ VERSION="2025-11-14"
 C_RED="\033[31m"
 C_GRN="\033[32m"
 C_YEL="\033[33m"
-C_BLU="\033[34m"
 C_CYN="\033[36m"
 C_MAG="\033[35m"
 C_RST="\033[0m"
@@ -113,7 +112,6 @@ DO_WMAP=0
 DO_API=0
 DO_CSP_RESEARCH=0
 VERBOSE=0
-GLOBAL_UA=""
 RND_MIN=""
 RND_MAX=""
 
@@ -145,7 +143,7 @@ hadixxity options (passive reconnaissance):
       --httpx-final   Run httpx over consolidated subdomains
 
 SUPERECON options (active reconnaissance):
-  --passive          OSINT only (don't touch the target)
+  --passive          SUPERECON passive mode (OSINT only, don't touch the target)
   --full-subs        Run all subdomain sources
   --crt              Enable crt.sh
   --ctfr             Enable ctfr
@@ -196,11 +194,6 @@ EOF
 # ---------- Helpers ----------
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Command '$1' not found in \$PATH. Please install it first."
-}
-
-ensure_file() {
-  local file="$1"
-  [[ -f "$file" ]] || : > "$file"
 }
 
 # ---------- Check scripts ----------
@@ -441,11 +434,14 @@ run_superecon() {
   [[ "${VERBOSE}" -eq 1 ]] && superecon_args+=(--verbose)
   # Map random UA: if USE_RANDOM_UA is set, pass --random-ua to SUPERECON
   [[ "${USE_RANDOM_UA}" -eq 1 ]] && superecon_args+=(--random-ua)
-  # Map delays: use RND_MIN/RND_MAX if set, otherwise use DELAY_MIN/DELAY_MAX
+  # Map delays: use RND_MIN/RND_MAX if set, otherwise DELAY_MIN/DELAY_MAX, or DELAY_FIXED as SEC:SEC
   if [[ -n "${RND_MIN}" && -n "${RND_MAX}" ]]; then
     superecon_args+=(--delay "${RND_MIN}:${RND_MAX}")
   elif [[ -n "${DELAY_MIN}" && -n "${DELAY_MAX}" ]]; then
     superecon_args+=(--delay "${DELAY_MIN}:${DELAY_MAX}")
+  elif [[ -n "${DELAY_FIXED}" ]]; then
+    # Map fixed delay to range format for SUPERECON (SEC:SEC)
+    superecon_args+=(--delay "${DELAY_FIXED}:${DELAY_FIXED}")
   fi
   [[ "${PASSIVE_ONLY}" -eq 1 ]] && superecon_args+=(--passive)
   [[ "${FULL_SUBS}" -eq 1 ]] && superecon_args+=(--full-subs)
@@ -602,17 +598,45 @@ consolidate_results() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -d|--domain)
+      if [[ -z "${2:-}" || "${2:0:1}" == "-" ]]; then
+        die "Option $1 requires a domain name"
+      fi
       TARGET_DOMAIN="$2"; shift 2;;
     -n|--name)
-      COMPANY_NAME="$2"; shift 2;;
+      if [[ -z "${2:-}" || "${2:0:1}" == "-" ]]; then
+        warn "Option $1 expects a company name. Ignoring."
+        shift 1
+      else
+        COMPANY_NAME="$2"; shift 2
+      fi;;
     -i|--ip)
-      SEED_IP="$2"; shift 2;;
+      if [[ -z "${2:-}" || "${2:0:1}" == "-" ]]; then
+        warn "Option $1 expects an IP address. Ignoring."
+        shift 1
+      else
+        SEED_IP="$2"; shift 2
+      fi;;
     -a|--asn)
-      ASNS="$2"; shift 2;;
+      if [[ -z "${2:-}" || "${2:0:1}" == "-" ]]; then
+        warn "Option $1 expects ASN(s). Ignoring."
+        shift 1
+      else
+        ASNS="$2"; shift 2
+      fi;;
     -o|--outdir)
-      OUTDIR="$2"; shift 2;;
+      if [[ -z "${2:-}" || "${2:0:1}" == "-" ]]; then
+        warn "Option $1 expects an output directory. Ignoring."
+        shift 1
+      else
+        OUTDIR="$2"; shift 2
+      fi;;
     -f|--config)
-      CONFIG_FILE="$2"; shift 2;;
+      if [[ -z "${2:-}" || "${2:0:1}" == "-" ]]; then
+        warn "Option $1 expects a config file path. Ignoring."
+        shift 1
+      else
+        CONFIG_FILE="$2"; shift 2
+      fi;;
     -S|--shodan)
       USE_SHODAN=1; shift 1;;
     -C|--cloud)
@@ -627,24 +651,37 @@ while [[ $# -gt 0 ]]; do
         APEX_LIST_FILE="$2"; shift 2
       fi;;
     -U|--user-agent)
-      CUSTOM_USER_AGENT="$2"; USE_RANDOM_UA=0; shift 2;;
+      if [[ -z "${2:-}" || "${2:0:1}" == "-" ]]; then
+        warn "Option $1 expects a user agent string. Ignoring."
+        shift 1
+      else
+        CUSTOM_USER_AGENT="$2"; USE_RANDOM_UA=0; shift 2
+      fi;;
     --random-ua)
       USE_RANDOM_UA=1; shift 1;;
     --delay)
-      if [[ "$2" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+      if [[ -z "${2:-}" || "${2:0:1}" == "-" ]]; then
+        warn "Option $1 expects a numeric value. Ignoring."
+        shift 1
+      elif [[ "$2" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
         DELAY_FIXED="$2"; DELAY_MIN=""; DELAY_MAX=""; shift 2
       else
         die "Invalid value for --delay (use a positive number, decimals allowed)"
       fi;;
     --random-delay)
-      range="$2"
-      [[ "$range" == *:* ]] || die "Invalid format for --random-delay. Use MIN:MAX"
-      RND_MIN="${range%%:*}"
-      RND_MAX="${range##*:}"
-      DELAY_MIN="${RND_MIN}"
-      DELAY_MAX="${RND_MAX}"
-      DELAY_FIXED=""
-      shift 2;;
+      if [[ -z "${2:-}" || "${2:0:1}" == "-" ]]; then
+        warn "Option $1 expects MIN:MAX format. Ignoring."
+        shift 1
+      else
+        range="$2"
+        [[ "$range" == *:* ]] || die "Invalid format for --random-delay. Use MIN:MAX"
+        RND_MIN="${range%%:*}"
+        RND_MAX="${range##*:}"
+        DELAY_MIN="${RND_MIN}"
+        DELAY_MAX="${RND_MAX}"
+        DELAY_FIXED=""
+        shift 2
+      fi;;
     --httpx-final)
       RUN_FINAL_HTTPX=1; shift 1;;
     --passive)
@@ -737,16 +774,13 @@ info "Output: ${OUTDIR}"
 check_scripts
 need_cmd bash
 
-run_hadixxity
-prepare_superecon_input
-
-if [[ "${PASSIVE_ONLY}" -eq 0 ]]; then
+  run_hadixxity
+  prepare_superecon_input
+  
+  # Always run SUPERECON (--passive flag is handled by SUPERECON itself)
   run_superecon
-else
-  info "Passive mode enabled, skipping SUPERECON"
-fi
-
-consolidate_results
+  
+  consolidate_results
 
 ok "ixxxi.sh completed successfully."
 info "Review the summary at: ${OUTDIR}/ixxxi-summary.txt"
