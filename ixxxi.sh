@@ -196,6 +196,76 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Command '$1' not found in \$PATH. Please install it first."
 }
 
+# Check and fix script encoding issues (UTF-16, BOM, null bytes)
+check_script_encoding() {
+  local script_path="$1"
+  local script_name="$2"
+  
+  if [[ ! -f "${script_path}" ]]; then
+    return 1
+  fi
+  
+  # Check for null bytes (UTF-16 or binary)
+  if head -c 1000 "${script_path}" 2>/dev/null | grep -q $'\x00'; then
+    warn "${script_name} appears to be in UTF-16 or has null bytes. Attempting to fix..."
+    
+    # Try to convert UTF-16 to UTF-8
+    if command -v iconv >/dev/null 2>&1; then
+      local temp_file="${script_path}.tmp"
+      if iconv -f UTF-16 -t UTF-8 "${script_path}" > "${temp_file}" 2>/dev/null; then
+        if [[ -s "${temp_file}" ]]; then
+          mv "${temp_file}" "${script_path}" || return 1
+          chmod +x "${script_path}" || return 1
+          ok "Converted ${script_name} from UTF-16 to UTF-8"
+          return 0
+        fi
+      fi
+      rm -f "${temp_file}" 2>/dev/null || true
+    fi
+    
+    # Try to remove null bytes with sed/tr
+    if command -v sed >/dev/null 2>&1; then
+      local temp_file="${script_path}.tmp"
+      if sed 's/\x00//g' "${script_path}" > "${temp_file}" 2>/dev/null; then
+        if [[ -s "${temp_file}" ]]; then
+          mv "${temp_file}" "${script_path}" || return 1
+          chmod +x "${script_path}" || return 1
+          ok "Removed null bytes from ${script_name}"
+          return 0
+        fi
+      fi
+      rm -f "${temp_file}" 2>/dev/null || true
+    fi
+    
+    err "Could not automatically fix ${script_name} encoding. Please fix manually:"
+    err "  file ${script_path}"
+    err "  iconv -f UTF-16 -t UTF-8 ${script_path} > ${script_path}.fixed && mv ${script_path}.fixed ${script_path}"
+    return 1
+  fi
+  
+  # Check for BOM (Byte Order Mark) - UTF-8 BOM is EF BB BF
+  if command -v od >/dev/null 2>&1; then
+    local bom_check=$(head -c 3 "${script_path}" 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n' || echo "")
+    if [[ "${bom_check}" == *"efbbbf"* ]]; then
+      warn "${script_name} has UTF-8 BOM. Removing..."
+      if command -v sed >/dev/null 2>&1; then
+        sed -i '1s/^\xEF\xBB\xBF//' "${script_path}" 2>/dev/null || true
+      fi
+    fi
+  fi
+  
+  # Verify it's a valid text file (has shebang or is readable)
+  if ! head -n 1 "${script_path}" 2>/dev/null | grep -q "^#!"; then
+    # Not a script file, but might still be valid
+    if ! head -c 100 "${script_path}" 2>/dev/null | grep -q "[[:print:]]"; then
+      err "${script_name} does not appear to be a valid text file"
+      return 1
+    fi
+  fi
+  
+  return 0
+}
+
 # ---------- Check scripts ----------
 check_scripts() {
   local found_hadixxity=0
@@ -238,6 +308,11 @@ check_scripts() {
     fi
   else
     found_hadixxity=1
+  fi
+  
+  # Check encoding and fix if needed
+  if ! check_script_encoding "${HADIXXITY_SCRIPT}" "hadixxity.sh"; then
+    die "hadixxity.sh has encoding issues that could not be automatically fixed"
   fi
   
   # Check if hadixxity.sh is executable
@@ -285,10 +360,20 @@ check_scripts() {
     found_superecon=1
   fi
   
+  # Check encoding and fix if needed
+  if ! check_script_encoding "${SUPERECON_SCRIPT}" "superecon.sh"; then
+    die "superecon.sh has encoding issues that could not be automatically fixed"
+  fi
+  
   # Check if superecon.sh is executable
   if [[ ! -x "${SUPERECON_SCRIPT}" ]]; then
     warn "superecon.sh is not executable, attempting chmod +x..."
     chmod +x "${SUPERECON_SCRIPT}" || die "Could not make superecon.sh executable"
+  fi
+  
+  # Final validation: try to read first line to ensure it's a valid script
+  if ! head -n 1 "${SUPERECON_SCRIPT}" 2>/dev/null | grep -q "^#!"; then
+    warn "superecon.sh does not start with shebang, but continuing..."
   fi
 }
 
@@ -335,67 +420,55 @@ prepare_superecon_input() {
   # Create SUPERECON directories if they don't exist
   mkdir -p "${superecon_sources}" "${superecon_subdomains}"
 
+  # Check if hadixxity already did CT logs (to avoid duplication warnings)
+  local hadixxity_did_ct=0
+  if [[ -d "${OUTDIR}/ct" ]] && [[ -n "$(find "${OUTDIR}/ct" -name "*.subdomains.txt" -type f 2>/dev/null | head -1)" ]]; then
+    hadixxity_did_ct=1
+  fi
+
   # Copy consolidated subdomains from hadixxity to SUPERECON sources
   # SUPERECON's unify_subdomains function looks for specific files in sources/
-  # We'll add hadixxity subdomains to a file that SUPERECON recognizes (crt-<domain>-domains.txt)
-  local crt_dest="${superecon_sources}/crt-${TARGET_DOMAIN}-domains.txt"
+  # We use crt-<domain>-domains.txt format so SUPERECON will include it in unification
+  # If SUPERECON also runs --crt, it will overwrite this file, but that's OK as it will
+  # merge everything during unification anyway
+  local hadixxity_source_file="${superecon_sources}/crt-${TARGET_DOMAIN}-domains.txt"
   
   if [[ -f "${hadixxity_reports}/subdomains.txt" ]] && [[ -s "${hadixxity_reports}/subdomains.txt" ]]; then
-    info "Copying hadixxity subdomains to SUPERECON sources"
-    # SUPERECON looks for crt-<domain>-domains.txt in sources/
-    # We'll create/append to this file so SUPERECON includes hadixxity subdomains in unification
-    if [[ ! -f "${crt_dest}" ]]; then
-      cp "${hadixxity_reports}/subdomains.txt" "${crt_dest}" || true
-    else
-      # Merge with existing crt file
-      cat "${hadixxity_reports}/subdomains.txt" >> "${crt_dest}" 2>/dev/null || true
-      sort -u "${crt_dest}" -o "${crt_dest}" || true
+    info "Copying hadixxity subdomains to SUPERECON sources (as crt-${TARGET_DOMAIN}-domains.txt)"
+    # Copy hadixxity consolidated subdomains (includes subfinder, CT, etc. already merged)
+    # This file will be read by SUPERECON's unify_subdomains function
+    cp "${hadixxity_reports}/subdomains.txt" "${hadixxity_source_file}" 2>/dev/null || true
+    
+    # Ensure no duplicates and sort
+    if [[ -f "${hadixxity_source_file}" ]]; then
+      sort -u "${hadixxity_source_file}" -o "${hadixxity_source_file}" || true
+      local sub_count=$(wc -l < "${hadixxity_source_file}" 2>/dev/null || echo 0)
+      ok "Hadixxity subdomains added to sources: ${sub_count} subdomains"
+      
+      # Inform about potential duplication if SUPERECON will also do CT/subfinder
+      if [[ "${FULL_SUBS}" -eq 1 ]] || [[ "${DO_CRT}" -eq 1 ]]; then
+        if [[ "${hadixxity_did_ct}" -eq 1 ]]; then
+          info "Note: hadixxity already collected CT logs. SUPERECON's --crt/--full-subs will add more, but duplicates will be removed during unification"
+        fi
+      fi
     fi
-    local sub_count=$(wc -l < "${crt_dest}" 2>/dev/null || echo 0)
-    ok "Subdomains added to sources (crt file): ${sub_count} subdomains"
   else
     warn "No consolidated subdomains found from hadixxity"
   fi
 
-  # Also copy CT log subdomains if they exist (merge into the same crt file)
-  if [[ -d "${OUTDIR}/ct" ]]; then
-    for ct_file in "${OUTDIR}"/ct/*.subdomains.txt; do
-      if [[ -f "${ct_file}" ]] && [[ -s "${ct_file}" ]]; then
-        local basename_ct=$(basename "${ct_file}" .subdomains.txt)
-        # If it's the same domain, merge into the main crt file
-        if [[ "${basename_ct}" == "${TARGET_DOMAIN}" ]]; then
-          if [[ -f "${crt_dest}" ]]; then
-            cat "${ct_file}" >> "${crt_dest}" 2>/dev/null || true
-            sort -u "${crt_dest}" -o "${crt_dest}" || true
-          else
-            cp "${ct_file}" "${crt_dest}" || true
-          fi
-        else
-          # Different domain, create separate file
-          local separate_crt="${superecon_sources}/crt-${basename_ct}-domains.txt"
-          if [[ ! -f "${separate_crt}" ]]; then
-            cp "${ct_file}" "${separate_crt}" || true
-          else
-            cat "${ct_file}" >> "${separate_crt}" 2>/dev/null || true
-            sort -u "${separate_crt}" -o "${separate_crt}" || true
-          fi
-        fi
-      fi
-    done
-  fi
-
   # Create unified subdomain file for SUPERECON
   # SUPERECON expects subdomains/subdomains-<domain>.txt and will use it if it exists
-  # If SUPERECON runs its own unification, it will merge all sources including our hadixxity file
+  # This file serves as a pre-unified seed, but SUPERECON will still run its own unification
+  # which will merge all sources (including hadixxity file above) and deduplicate
   local unified_subs="${superecon_subdomains}/subdomains-${TARGET_DOMAIN}.txt"
   
   # If file doesn't exist or is empty, create it with hadixxity data
   if [[ ! -s "${unified_subs}" ]]; then
     : > "${unified_subs}"
     
-    # Add subdomains from hadixxity
-    if [[ -f "${hadixxity_reports}/subdomains.txt" ]] && [[ -s "${hadixxity_reports}/subdomains.txt" ]]; then
-      cat "${hadixxity_reports}/subdomains.txt" >> "${unified_subs}" 2>/dev/null || true
+    # Add subdomains from hadixxity consolidated file
+    if [[ -f "${hadixxity_source_file}" ]] && [[ -s "${hadixxity_source_file}" ]]; then
+      cat "${hadixxity_source_file}" >> "${unified_subs}" 2>/dev/null || true
     fi
     
     # Add root domain if not present
@@ -409,13 +482,22 @@ prepare_superecon_input() {
       local count=$(wc -l < "${unified_subs}" 2>/dev/null || echo 0)
       ok "Unified subdomains prepared: ${count} subdomains in ${unified_subs}"
     else
-      warn "Could not prepare unified subdomains"
+      warn "Could not prepare unified subdomains, using root domain only"
       echo "${TARGET_DOMAIN}" > "${unified_subs}"
     fi
   else
-    # File already exists (maybe from a previous run), just log it
+    # File already exists (maybe from a previous run), merge hadixxity data if not already present
+    if [[ -f "${hadixxity_source_file}" ]] && [[ -s "${hadixxity_source_file}" ]]; then
+      # Check if hadixxity data is already in unified file
+      local hadixxity_first=$(head -n 1 "${hadixxity_source_file}" 2>/dev/null || echo "")
+      if [[ -n "${hadixxity_first}" ]] && ! grep -Fxq "${hadixxity_first}" "${unified_subs}" 2>/dev/null; then
+        info "Merging hadixxity subdomains into existing unified file"
+        cat "${hadixxity_source_file}" >> "${unified_subs}" 2>/dev/null || true
+        sort -u "${unified_subs}" -o "${unified_subs}" || true
+      fi
+    fi
     local count=$(wc -l < "${unified_subs}" 2>/dev/null || echo 0)
-    info "Unified subdomains file already exists: ${count} subdomains in ${unified_subs}"
+    info "Unified subdomains file: ${count} subdomains in ${unified_subs}"
   fi
 
   ok "[PHASE 2] Data prepared for SUPERECON"
@@ -479,8 +561,40 @@ run_superecon() {
     info "SUPERECON command: ${SUPERECON_SCRIPT} ${superecon_args[*]}"
   fi
 
-  if ! "${SUPERECON_SCRIPT}" "${superecon_args[@]}"; then
-    warn "superecon.sh completed with errors, but continuing..."
+  # Try to execute SUPERECON
+  local superecon_output
+  local superecon_exit_code=0
+  
+  if ! superecon_output=$("${SUPERECON_SCRIPT}" "${superecon_args[@]}" 2>&1); then
+    superecon_exit_code=$?
+    
+    # Check for specific "Exec format error" which indicates encoding/binary issues
+    if echo "${superecon_output}" | grep -qi "cannot execute binary file\|Exec format error"; then
+      err "SUPERECON script has execution format errors (likely UTF-16 or binary encoding)"
+      err "Attempting to fix encoding..."
+      
+      # Try to fix encoding again
+      if check_script_encoding "${SUPERECON_SCRIPT}" "superecon.sh"; then
+        warn "Retrying SUPERECON execution after encoding fix..."
+        if ! "${SUPERECON_SCRIPT}" "${superecon_args[@]}"; then
+          err "SUPERECON still failed after encoding fix. Manual intervention required."
+          err "Please check: file ${SUPERECON_SCRIPT}"
+          err "If it's UTF-16, run: iconv -f UTF-16 -t UTF-8 ${SUPERECON_SCRIPT} > ${SUPERECON_SCRIPT}.fixed && mv ${SUPERECON_SCRIPT}.fixed ${SUPERECON_SCRIPT}"
+          warn "Continuing without SUPERECON results..."
+        else
+          ok "SUPERECON executed successfully after encoding fix"
+        fi
+      else
+        err "Could not fix SUPERECON encoding automatically"
+        err "SUPERECON phase skipped. Please fix the script manually and re-run."
+        warn "Continuing without SUPERECON results..."
+      fi
+    else
+      warn "superecon.sh completed with errors (exit code: ${superecon_exit_code}), but continuing..."
+      if [[ "${VERBOSE}" -eq 1 ]]; then
+        echo "${superecon_output}" | tail -20
+      fi
+    fi
   fi
 
   ok "[PHASE 3] SUPERECON completed"
